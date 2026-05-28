@@ -9,7 +9,6 @@ tab1, tab2, tab3 = st.tabs(["Предсказание", "Статистика", 
 
 with tab1:
     user_input = st.text_area("Введите текст:")
-
     if st.button("Определить"):
         if not user_input.strip():
             st.warning("Введите текст")
@@ -20,17 +19,16 @@ with tab1:
                     json={"text": user_input}
                 )
                 data = response.json()
-
-                st.success(f"Язык: **{data['language_full']}** (`{data['language']}`)")
+                st.success(f"Язык: **{data['language']}**")
                 st.metric("Уверенность модели", f"{data['probability'] * 100:.1f}%")
-
-                if not data['is_confident']:
+                if data['probability'] < 0.8:
                     st.warning("Модель не уверена в результате (< 80%)")
-
-
+                st.subheader("Топ-5 языков:")
+                top5 = list(data['probabilities'].items())[:5]
+                for lang, prob in top5:
+                    st.progress(prob, text=f"{lang}: {prob*100:.1f}%")
             except Exception as e:
                 st.error(f"Ошибка: {e}")
-
 
 with tab2:
     st.header("Статистика датасета")
@@ -43,8 +41,10 @@ with tab2:
         st.subheader("Общая информация")
         col1, col2, col3 = st.columns(3)
         col1.metric("Всего текстов", len(df))
-        col2.metric("Языков", df['language'].nunique())
-        col3.metric("Средняя длина", f"{df['text'].astype(str).apply(len).mean():.0f} симв.")
+        col2.metric("Языков", df['Language'].nunique())
+        col3.metric("Средняя длина", f"{df['Text'].astype(str).apply(len).mean():.0f} симв.")
+        lang_counts = df['Language'].value_counts()
+        df['text_len'] = df['Text'].astype(str).apply(len)
 
         st.subheader("Первые записи")
         st.dataframe(df.head())

@@ -1,74 +1,11 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Dict, List
+from pydantic import BaseModel
+import joblib
 import re
+import pandas as pd
 
-class TextRequest(BaseModel):
-    text: str = Field(..., min_length=1, max_length=10000, description="Текст для анализа")
-
-class PredictionResponse(BaseModel):
-    language: str
-    language_full: str
-    probability: float
-    top_languages: Dict[str, float]
-    is_confident: bool
-
-class BatchRequest(BaseModel):
-    texts: List[str] = Field(..., min_items=1, max_items=100)
-
-class BatchResponse(BaseModel):
-    results: List[PredictionResponse]
-    total: int
-
-LANGUAGE_NAMES = {
-    "en": "English",
-    "ru": "Russian",
-    "uk": "Ukrainian",
-    "fr": "French",
-    "de": "German",
-    "es": "Spanish",
-}
-
-def predict_language(text: str) -> dict:
-    text = re.sub(r"\s+", " ", text).strip().lower()
-
-    if any(ch in text for ch in "ёъыэ"):
-        lang, prob = "ru", 0.94
-        top = {"ru": 0.94, "uk": 0.03, "en": 0.03}
-    elif any(ch in text for ch in "іїєґ"):
-        lang, prob = "uk", 0.95
-        top = {"uk": 0.95, "ru": 0.03, "en": 0.02}
-    elif any(ch in text for ch in "áéíóúñ¿¡"):
-        lang, prob = "es", 0.92
-        top = {"es": 0.92, "fr": 0.05, "en": 0.03}
-    elif any(ch in text for ch in "àâçéèêëîïôùûüœ"):
-        lang, prob = "fr", 0.91
-        top = {"fr": 0.91, "de": 0.05, "en": 0.04}
-    elif any(ch in text for ch in "äöüß"):
-        lang, prob = "de", 0.93
-        top = {"de": 0.93, "en": 0.04, "fr": 0.03}
-    elif re.search(r"[а-яА-Я]", text):
-        lang, prob = "ru", 0.80
-        top = {"ru": 0.80, "uk": 0.15, "en": 0.05}
-    else:
-        lang, prob = "en", 0.88
-        top = {"en": 0.88, "de": 0.07, "fr": 0.05}
-
-    return {
-        "language": lang,
-        "language_full": LANGUAGE_NAMES.get(lang, lang),
-        "probability": prob,
-        "top_languages": top,
-        "is_confident": prob > 0.8,
-    }
-
-
-app = FastAPI(
-    title="Language Detection API",
-    description="API для определения языка текста",
-    version="1.0.0"
-)
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
@@ -77,34 +14,55 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+model = joblib.load('language_final.pkl')
 
-@app.get("/health", tags=["Общее"])
-def health():
-    return {"status": "ok", "model_loaded": True}
+class TextRequest(BaseModel):
+    text: str
 
+def clean_text(text):
+    if pd.isna(text) or not isinstance(text, str):
+        return ''
+    text = text.lower()
+    text = re.sub(r'http\S+|www\S+|https\S+', '', text)
+    text = re.sub(r'[^\w\s-]', ' ', text, flags=re.UNICODE)
+    text = re.sub(r'\d+', ' ', text)
+    text = re.sub(r'\s+', ' ', text).strip()
+    return text
 
-@app.get("/languages", tags=["Информация"])
-def get_languages():
-    return {
-        "languages": [
-            {"code": code, "name": name}
-            for code, name in LANGUAGE_NAMES.items()
-        ]
+@app.get('/')
+def index():
+    return {'status': 'ok', 'message': 'Language Detection API работает'}
+
+@app.post('/predict')
+def predict(req: TextRequest):
+    text = req.text.strip()
+    if not text:
+        return {'error': 'Текст не может быть пустым'}
+
+    cleaned = clean_text(text)
+
+    predicted_lang = model.predict([cleaned])[0]
+    proba_array    = model.predict_proba([cleaned])[0]
+    max_proba      = float(proba_array.max())
+
+    all_probas = {
+        lang: round(float(prob), 4)
+        for lang, prob in sorted(
+            zip(model.classes_, proba_array),
+            key=lambda x: x[1],
+            reverse=True
+        )
     }
 
+    return {
+        'language':      predicted_lang,
+        'probability':   round(max_proba, 4),
+        'probabilities': all_probas
+    }
 
-@app.post("/predict", response_model=PredictionResponse, tags=["Предсказание"])
-def predict(request: TextRequest):
-    try:
-        return predict_language(request.text)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/predict/batch", response_model=BatchResponse, tags=["Предсказание"])
-def predict_batch(request: BatchRequest):
-    try:
-        results = [predict_language(text) for text in request.texts]
-        return {"results": results, "total": len(results)}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+@app.get('/stats')
+def stats():
+    return {
+        'supported_languages': list(model.classes_),
+        'total_languages':     len(model.classes_)
+    }
